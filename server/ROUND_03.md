@@ -20,6 +20,25 @@ wget -O out/prob/init/init.pth "https://cloud.tsinghua.edu.cn/f/159a3370b4e843dd
 mkdir -p data/nuscenes_cam   # 两个 pkl 放这里
 ```
 
+## 1.5 补装 pointops（GaussianFormer-2 的隐藏依赖，安装文档漏写）
+
+`GaussianLifterV2` 需要 `pointops`（官方 issue #47/#53 确认，installation.md 未列）。
+用社区修好编译问题的版本（源自 point-transformer，已去掉 THC/THC.h）：
+
+```bash
+conda activate gf2
+cd ~/BeliefGauss/third_party/GaussianFormer
+git clone https://github.com/xieyuser/pointops.git pointops
+cd pointops
+TORCH_CUDA_ARCH_LIST="8.6" python setup.py install   # 编译 pointops_cuda（A40=sm_86）
+cd ..
+# 验证（在 GaussianFormer 根目录下执行）：
+python -c "import pointops; from pointops.functions.pointops import furthestsampling; print('pointops OK')"
+```
+
+注意：clone 出的 `pointops/` 文件夹必须留在 GaussianFormer 根目录下（import 需要），不要删。
+函数名差异（furthestsampling vs farthest_point_sampling）由我们的提取脚本自动加别名，无需手改 `__init__.py`。
+
 ## 2. 加载冒烟（数据无关，~1 分钟）
 
 ```bash

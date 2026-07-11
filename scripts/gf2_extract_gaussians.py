@@ -100,6 +100,21 @@ def main():
     from mmseg.models import build_segmentor
     from torch.utils.data import DataLoader
 
+    # pointops is an undocumented GaussianFormer-2 dependency (issue #47/#53).
+    # The community build (point-transformer lib) names the function
+    # `furthestsampling`; GaussianLifterV2 imports `farthest_point_sampling`.
+    # Alias it BEFORE `import model` so the from-import inside the lifter
+    # resolves, regardless of which pointops variant is installed.
+    try:
+        import pointops
+        if not hasattr(pointops, "farthest_point_sampling"):
+            from pointops.functions.pointops import furthestsampling
+            pointops.farthest_point_sampling = furthestsampling
+        print("pointops OK:", pointops.farthest_point_sampling)
+    except ImportError as e:
+        raise SystemExit(
+            f"pointops missing ({e}). Install it first — see server/ROUND_03.md §1.5")
+
     import model  # noqa: F401
     from dataset import OPENOCC_DATASET
     from dataset.utils import custom_collate_fn_temporal
