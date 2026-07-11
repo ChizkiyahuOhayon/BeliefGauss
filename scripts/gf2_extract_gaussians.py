@@ -138,6 +138,18 @@ def main():
     missing, unexpected = net.load_state_dict(sd, strict=True)
     net = net.to(args.device).eval()
 
+    # GaussianLifterV2.forward reads metas['occ_label']/['occ_cam_mask'] to
+    # build 'pixel_gt' — a training-loss target that never influences the
+    # Gaussian representation (returned as 'pixel_gt' only). We dropped the
+    # occupancy loader, so feed dummies to keep the exact official inference
+    # path (the benchmarking=True escape hatch would switch FPS to a chunked
+    # approximation and add randomness — avoid).
+    occ_res = list(net.lifter.occ_resolution)
+    empty_label = int(net.lifter.empty_label)
+    dummy_occ = torch.full([1] + occ_res, empty_label,
+                           dtype=torch.long, device=args.device)
+    dummy_mask = torch.zeros([1] + occ_res, dtype=torch.bool, device=args.device)
+
     keyframes = dataset.keyframes
     times, n_saved = [], 0
     torch.cuda.reset_peak_memory_stats() if args.device.startswith("cuda") else None
@@ -150,6 +162,8 @@ def main():
                 if isinstance(batch[k], torch.Tensor):
                     batch[k] = batch[k].to(args.device)
             imgs = batch.pop("img")
+            batch["occ_label"] = dummy_occ
+            batch["occ_cam_mask"] = dummy_mask
             t0 = time.time()
             rep = net(imgs=imgs, metas=batch, rep_only=True)
             if args.device.startswith("cuda"):
