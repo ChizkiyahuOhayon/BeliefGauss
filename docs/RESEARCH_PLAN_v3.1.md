@@ -6,7 +6,7 @@
 2. *Know the Unknown: Belief-State Gaussian World Models for Risk-Aware Planning*
 3. *BeliefGauss: Persistent Probabilistic Scene Memory with Closed-Form Risk Propagation for Autonomous Driving*
 
-**日期**：2026-07-09　**硬件**：8×RTX 3090（24GB, Ampere, bf16 可用）　**目标**：CVPR 2027（预计截稿 ≈ 2026 年 11 月上中旬，以官网为准；CVPR 2026 为 11/6 摘要 + 11/13 正文）
+**日期**：2026-07-09　**硬件**：~~8×RTX 3090~~ → **4×A40 46GB（2026-07-12 换机，Ampere sm_86，bf16 可用；共享机，默认用 1–3 号卡；数据集在 127T NAS）**　**目标**：CVPR 2027（预计截稿 ≈ 2026 年 11 月上中旬，以官网为准；CVPR 2026 为 11/6 摘要 + 11/13 正文）
 
 ---
 
@@ -208,16 +208,18 @@ $$
 - **Host-B**：DriveLaW-Act（扩散规划器）+ belief tokens 条件注入，**冻结 DriveLaW-Video**。出 NAVSIM PDMS 表，证明即插即用。W1 需核实 Act 的参数量与条件接口（代码 2026.3 已开源）。
 - **Host-C（stretch，可砍）**：0.5–3B MLLM（如 Qwen2.5-VL）+ LoRA，做"不确定性感知问答"（"左前方被遮挡区域有车的概率？"）小节，只作 qualitative + 小表。
 
-### 3.5 算力估算（诚实标注：均为估计，W1 实测后修正）
+### 3.5 算力估算（2026-07-12 按 4×A40 重估；均为估计，R2 实测吞吐后再修正）
 
-| 阶段 | 数据 | 规模 | 估计 GPU 时长（8×3090） |
+换机影响：A40 单卡 ≈ 3090（37 TFLOPS FP32，带宽略低），卡数 8→4 ⇒ wallclock ≈ ×1.7；46GB 显存允许 micro-batch 2–4/卡、更长 BPTT 窗，部分抵消。**特征缓存从优化项升级为必做项**；数据在 CIFS NAS 上，若小文件随机读实测慢，keyframe 图像/特征缓存挪本地盘。
+
+| 阶段 | 数据 | 规模 | 估计 GPU 时长（4×A40） |
 |---|---|---|---|
 | S0 复现 GaussianFormer-2 推理/短训 | mini | — | 1–2 天 |
-| S1 记忆预训练（forecast + 校准） | trainval | 12–18 ep | **5–8 天** |
-| S2 规划头 + 风险 | trainval | +6 ep | 2–3 天 |
-| S3 DriveLaW-Act adapter | navtrain | — | 3–5 天 |
-| 消融 ×10 | 1/4 split 或 mini | 短程 | 每组 0.5–1.5 天 |
-| 合计 | | | ≈ 6–8 周 GPU 时（与写作重叠可容纳） |
+| S1 记忆预训练（forecast + 校准） | trainval | 12–18 ep | **8–13 天** |
+| S2 规划头 + 风险 | trainval | +6 ep | 3–5 天 |
+| S3 DriveLaW-Act adapter | navtrain | — | 5–8 天 |
+| 消融 ×10 | 1/4 split 或 mini（特征缓存） | 短程 | 每组 0.5–2 天 |
+| 合计 | | | ≈ 8–11 周 GPU 时（与写作重叠，buffer 变薄：消融全走缓存特征，全量只跑主表） |
 
 ---
 

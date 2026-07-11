@@ -1,47 +1,94 @@
-# 第 2 轮：磁盘处理 + mini 数据 + GaussianFormer-2 复现
+# 第 2 轮（新机器版）：4×A40 环境重建 + NAS 数据布局 + GaussianFormer-2 复现
 
-> tag：`round-2`　预计人工操作 1–2 小时 + 下载/编译等待
+> tag：`round-2`　适用机器：4×NVIDIA A40 46GB，driver 535.309.01（CUDA 12.2），根盘 846G（剩 70G），NAS 127T 空闲
 > 有任何一步报错：停下，把完整输出发回，不要自行修改。
 
-## 0.【阻塞项】磁盘触底（99% 满，剩 17GB）—— 必须先做
-
-上轮 `df -h` 显示根分区 878G 只剩 17G。nuScenes 全量要 ~550G，加上特征缓存至少需要 **700G 连续可用**。请执行并把输出全部发回：
+## 0. 磁盘布局（已定：数据集上 NAS，热数据/环境留本地）
 
 ```bash
-df -h                                   # 所有挂载点（看有没有第二块盘/NAS）
-lsblk                                   # 物理盘列表（有没有未挂载的盘）
-du -sh /home/* /data* /mnt/* 2>/dev/null | sort -rh | head -20   # 大头在哪
+# 数据集统一放 NAS（127T 空闲）：
+export BG_DATA=/home/smbu/dy/nas/beliefgauss_data
+mkdir -p $BG_DATA/{nuscenes,occ3d}
+echo 'export BG_DATA=/home/smbu/dy/nas/beliefgauss_data' >> ~/.bashrc
+
+# 本地只放：conda 环境、代码、mini + Occ3D gts 副本（~20G）、之后的特征缓存
+mkdir -p ~/data_local
 ```
 
-然后三选一（发回你们的选择）：
-- **A**：有第二块盘/可加盘 → 挂载后把数据目录设为那块盘，后续所有 `~/data` 换成新路径；
-- **B**：能清理出 ≥700G（旧实验产物、别人的数据集）→ 清理后发回新的 `df -h`；
-- **C**：都不行 → 告诉我们，我们改用"流式解压 + 只保留 keyframe"方案（有损，尽量避免）。
-
-**mini + Occ3D gts 约需 20G**：若暂时清不出大空间，至少腾出 30G，本轮照常进行。
-
-## 1. 数据（本轮只要 mini + Occ3D gts）
+**先测 NAS 读写速度（决定后续训练策略，结果必须发回）**：
 
 ```bash
-# nuScenes mini（OpenDataLab，见 SETUP.md §1a；或官网 Asia 区直下，4GB）
-# 解压到 ~/data/nuscenes/，应有 v1.0-mini/ samples/ sweeps/ maps/
-
-# Occ3D gts（CVPR2023 challenge 版，见 SETUP.md §1b）
-# 解压到 ~/data/occ3d/gts/
-# 快速验证：
+# 写速度
+dd if=/dev/zero of=$BG_DATA/iotest.bin bs=1M count=4096 oflag=direct 2>&1 | tail -1
+# 顺序读速度
+dd if=$BG_DATA/iotest.bin of=/dev/null bs=1M iflag=direct 2>&1 | tail -1
+# 小文件随机读（模拟训练读图，关键指标）
 python - << 'EOF'
-import numpy as np, glob
-fs = glob.glob('/root/data/occ3d/gts/*/*/labels.npz')[:3] or \
-     glob.glob(__import__('os').path.expanduser('~/data/occ3d/gts/*/*/labels.npz'))[:3]
+import os, time, random
+base = os.environ['BG_DATA'] + '/iotest_small'
+os.makedirs(base, exist_ok=True)
+for i in range(2000):
+    open(f'{base}/{i}.bin','wb').write(os.urandom(150_000))  # ~150KB 模拟一张jpg
+t0=time.time(); idx=list(range(2000)); random.shuffle(idx)
+for i in idx: open(f'{base}/{i}.bin','rb').read()
+dt=time.time()-t0
+print(f'small-file random read: {2000/dt:.0f} files/s, {2000*0.15/dt:.0f} MB/s')
+EOF
+rm -rf $BG_DATA/iotest.bin $BG_DATA/iotest_small
+```
+
+## 1. GPU 使用规约（共享机）
+
+GPU0 上有别人的进程（dyslam）。我们的任务默认用 1–3 号卡：
+
+```bash
+export CUDA_VISIBLE_DEVICES=1,2,3   # 大训练前和机主确认 GPU0 是否可征用
+```
+
+## 2. 环境重建（新机器从零开始，按 SETUP.md §2–3，摘要如下）
+
+```bash
+pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+echo 'export HF_ENDPOINT=https://hf-mirror.com' >> ~/.bashrc && source ~/.bashrc
+
+conda create -n beliefgauss python=3.10 -y && conda activate beliefgauss
+cd ~ && git clone https://github.com/ChizkiyahuOhayon/BeliefGauss.git && cd BeliefGauss
+git fetch --tags && git checkout round-2
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip install -r requirements.txt
+
+# 复跑冒烟（新机器指纹，必须发回）
+python -m pytest tests/ -q
+python scripts/run_smoke_synthetic.py --config configs/smoke_synthetic.yaml --out outputs/smoke_a40
+python -c "import torch; print(torch.__version__, torch.version.cuda, \
+torch.cuda.device_count(), torch.cuda.get_device_name(0))" > outputs/smoke_a40/env.txt
+nvidia-smi >> outputs/smoke_a40/env.txt; df -h / $BG_DATA >> outputs/smoke_a40/env.txt
+```
+
+## 3. 数据下载（目标路径都在 NAS）
+
+```bash
+# nuScenes：OpenDataLab CLI（SETUP.md §1a），target 指向 $BG_DATA/nuscenes
+#   优先 mini + metadata；trainval 全量直接开始后台下（NAS 空间管够）
+# Occ3D gts：SETUP.md §1b，解压到 $BG_DATA/occ3d/gts/
+
+# mini + gts 各复制一份到本地（快 IO，日常开发用）：
+cp -r $BG_DATA/nuscenes/v1.0-mini ~/data_local/nuscenes_mini_meta 2>/dev/null
+# （samples/sweeps 的 mini 部分与 gts 同理，共 ~20G）
+
+# Occ3D 验证：
+python - << 'EOF'
+import numpy as np, glob, os
+fs = glob.glob(os.environ['BG_DATA'] + '/occ3d/gts/*/*/labels.npz')[:3]
 assert fs, 'gts 目录结构不对'
 d = np.load(fs[0])
 print('OK keys:', list(d.keys()), 'semantics', d['semantics'].shape, 'mask_camera', d['mask_camera'].shape)
 EOF
 ```
 
-## 2. GaussianFormer-2 独立环境（与 beliefgauss env 隔离）
+## 4. GaussianFormer-2 独立环境 + 编译 + mini 推理
 
-官方要求 python3.8 + torch 2.0.0 cu118（3090/sm_86 兼容）：
+A40 = Ampere sm_86，与 3090 同架构，官方 cu118 wheel 直接可用：
 
 ```bash
 conda create -n gf2 python=3.8.16 -y && conda activate gf2
@@ -53,34 +100,23 @@ pip install spconv-cu117 timm
 cd ~/BeliefGauss && mkdir -p third_party
 git clone https://github.com/huang-yh/GaussianFormer.git third_party/GaussianFormer
 cd third_party/GaussianFormer
-# 编译 4 个自定义 CUDA 算子（每个都要成功，报错即停）
 cd model/encoder/gaussian_encoder/ops && pip install -e . && cd -
 cd model/head/localagg && pip install -e . && cd -
 cd model/head/localagg_prob && pip install -e . && cd -
 cd model/head/localagg_prob_fast && pip install -e . && cd -
+
+# 权重：README Model Zoo 的 GaussianFormer-2 (prob6400)，HF 链接走 hf-mirror
+# 数据软链 + mini 推理（命令以其 README 为准）：
+ln -s $BG_DATA/nuscenes data/nuscenes; ln -s $BG_DATA/occ3d data/occ3d
+# 推理时采集吞吐：
+nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv -l 5 > gf2_infer_gpu.log &
 ```
 
-## 3. 权重 + mini 推理 + 吞吐
+## 5. 发回清单
 
-```bash
-# 权重：GaussianFormer README 的 Model Zoo 下载 GaussianFormer-2 (prob, 6400 Gaussians)
-# 链接若是 HuggingFace 走 hf-mirror；若是清华云盘直接 wget
-# 放到 third_party/GaussianFormer/ckpts/
-
-# 按其 README 跑 mini 评测（数据路径软链）：
-ln -s ~/data/nuscenes data/nuscenes 2>/dev/null; ln -s ~/data/occ3d data/occ3d 2>/dev/null
-# 具体 eval 命令以其 README 为准，典型形如：
-# python eval.py --py-config config/prob/nuscenes_gs6400.py --work-dir out/eval_mini \
-#     --resume-from ckpts/<权重>.pth
-
-# 记录吞吐：单卡推理时另开终端采集
-nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv -l 5 > gf2_infer_gpu.log &
-```
-
-## 4. 发回清单
-
-1. §0 的磁盘三条输出 + 你们的选择（A/B/C）；
-2. Occ3D 验证脚本的输出；
-3. GaussianFormer-2 编译是否全部成功（失败则发完整编译 log）；
-4. mini 推理的指标输出（mIoU 表）+ `gf2_infer_gpu.log` + 大致 wallclock；
-5. 一句话：trainval 下载进度（若已开始）。
+1. §0 三项 IO 测速输出（尤其 small-file random read）；
+2. `outputs/smoke_a40` 整个目录打包（新机器 Gate-0 指纹）；
+3. Occ3D 验证输出；
+4. GaussianFormer-2 四个算子编译成功与否（失败发完整 log）；
+5. mini 推理 mIoU 表 + `gf2_infer_gpu.log` + wallclock；
+6. trainval 下载进度一句话。
