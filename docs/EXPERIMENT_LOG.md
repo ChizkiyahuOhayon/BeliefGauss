@@ -110,3 +110,4 @@
   1. 过滤同时匹配 name 和 token（读 `v1.0-mini/scene.json` 的两个字段），输出目录用可读的 scene name；失配时打印 pkl 键样例与 name/token 样例便于远程诊断；
   2. **补漏（重要）**：提取的 npz 原本没存 `ego2global` 位姿和 `timestamp`——belief memory 的静态 Gaussian 自车对齐（GaussianWorld 式 predict 步）必需。现每帧随存 ego2global(4×4)、timestamp、sample_token（token 同时是与 Occ3D gts 目录对齐的主键）。
 - **教训入账**：远程执行前，凡涉及外部数据格式假设（键型、路径、单位），必须先向执行端要 3 行样例数据核对——本次损失一个往返。
+- **续（同日第二个卡点）**：过滤修复后提取进到前向，`GaussianLifterV2.forward` 第 194 行 `metas["occ_label"]` KeyError。读源码定位：occ_label/occ_cam_mask 仅用于构造 `pixel_gt`（PixelDistributionLoss 的训练目标，只作为返回值，**不影响 Gaussian 表示**）。两个候选修法：(a) 作者自带的 `benchmarking=True` 逃生门——但它同时把最远点采样切成分块近似 + 随机置换，偏离官方推理路径且非确定，**弃用**；(b) 注入 dummy occ_label（全 empty_label=17，[1,200,200,16]）+ dummy mask——保持精确官方路径，**采用**。此发现同时确认：官方 eval 即使纯推理也强制加载 occ GT，进一步佐证"绕过官方评估管线"决策正确。
