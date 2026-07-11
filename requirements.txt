@@ -1,0 +1,10 @@
+# Core (CPU smoke tests run with these alone)
+torch>=2.0
+numpy>=1.24
+scipy>=1.10
+pyyaml>=6.0
+matplotlib>=3.7
+pytest>=7.0
+
+# GPU-server phases add (documented in server/SETUP.md, installed separately):
+#   GaussianFormer-2 dependencies (mmcv/mmdet3d stack), nuscenes-devkit, gsplat

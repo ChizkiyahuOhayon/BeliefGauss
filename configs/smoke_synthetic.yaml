@@ -1,0 +1,46 @@
+seed: 42
+
+sim:
+  pos_dim: 2
+  dt: 0.5
+  horizon: 32
+  n_objects_range: [4, 8]
+  arena: 20.0
+  obs_sigma0: 0.2
+  obs_dist_scale: 20.0
+  clutter_rate: 0.15
+  feat_dim: 16
+  quality_dim: 3
+
+memory:
+  pos_dim: 2
+  feat_dim: 16
+  quality_dim: 3
+  capacity: 32
+  dt: 0.5
+  gate_chi2: 13.8
+  alpha_boost: 0.4
+  alpha_decay: 0.35
+  alpha_birth: 0.5
+  alpha_kill: 0.05
+  birth_pos_scale: 4.0
+  birth_vel_std: 2.0
+  hidden: 64
+  learned_dynamics: true
+  learned_noise: true
+  fixed_q_std: 0.15     # used by the fixed-noise KF baseline
+  fixed_r_std: 0.3
+
+train:
+  iterations: 250
+  teacher_forcing_iters: 80
+  batch_episodes: 3
+  train_episodes: 96
+  eval_episodes: 30
+  bptt_window: 8
+  lr: 0.003
+  loss_weights:
+    innov: 1.0
+    forecast: 1.0
+    calib: 5.0
+    exist: 0.2
