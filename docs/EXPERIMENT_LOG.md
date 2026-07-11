@@ -76,3 +76,24 @@
   - 算力：A40 单卡 ≈ 3090（FP32 37 vs 36 TFLOPS，显存带宽 696 vs 936 GB/s），卡数 8→4 ⇒ 数据并行 wallclock ≈ ×1.7–2；46GB 显存允许 micro-batch 2–4/卡 + 更长 BPTT 窗，部分抵消。计划 §3.5 预算表已按 ×1.7 重估，18 周时间线仍可行但 buffer 变薄——特征缓存策略从"省时优化"升级为**必做项**。
   - **新风险 R-IO**：训练数据在 CIFS 网络盘上，几十万小 jpg 的随机读可能成瓶颈。R2 新增三项 IO 测速（顺序写/顺序读/150KB 小文件随机读），若 small-file random read < 2000 files/s，则 W3 起把 samples keyframe 图像或 backbone 特征缓存到本地盘。
 - **动作**：`server/ROUND_02.md` 全量重写为新机器版（NAS 布局、IO 测速、GPU 规约、环境从零重建、新机器冒烟指纹）。
+
+---
+
+## Round 2 — GaussianFormer-2 环境落地 + 官方评估流程受阻（转向决策）
+
+- **日期**：2026-07-12　**执行**：朋友，4×A40 节点
+- **完成**：双 conda 环境（beliefgauss: py3.10/torch2.5/cu121；gf2: py3.8/torch2.0/cu118）；4 个自定义 CUDA 算子全部编译成功；nuScenes mini + Occ3D gts + annotations.json 落 NAS，软链建好；GaussianFormer-2 Prob-6400 权重（state_dict.pth, 467MB）下载完成。
+- **受阻**：官方 `eval.py` 跑不起来。根因分析（本地读源码确认）：
+  1. `GaussianLifterV2.__init__` 在**模型构建时**就 `torch.load('out/prob/init/init.pth')`——该文件 README 未提及，作者在 issue #46 补发（清华云盘 `159a3370b4e843ddaec5`）；
+  2. 官方数据管线 = 完整 nuScenes + SurroundOcc 标注 + 作者提供的 info pkl；mini 不被直接支持，SurroundOcc 我们本来就不用（主线用 Occ3D 的 mask_camera）。
+- **IO 实测（重要）**：NAS 小文件随机读 ~30 MB/s（≈200 张图/s），写 ~5 MB/s。判定：**直接从 NAS 读图训练喂不饱 4×A40**；顺序读写数字缺失，R3 补测。
+- **架构事实修正**：GaussianFormer-2 用 **R101-DCN backbone + 1600×864 输入**（计划 §3.1 原假设 R50/704×256 有误）——单帧编码比预想重，进一步强化"提取一次、缓存 Gaussians、下游全部离线训练"的路线。
+- **关键源码发现（转向依据）**：
+  1. 模型 forward 有 `rep_only=True` 模式，直接返回 `GaussianPrediction(means, scales, rotations, opacities, semantics)`——正是 BeliefGauss 消费的接口；
+  2. occupancy GT 加载只是 pipeline 里一个可拆卸的 transform（`LoadOccupancySurroundOcc`），提取 Gaussians 完全不需要 GT；
+  3. 数据集类支持自定义 `return_keys`，image-only 前向可行。
+- **决策（回应执行人的四个选项）**：
+  1. **放弃**复现官方 SurroundOcc 评估（选项1）——baseline mIoU 引论文数字即可，不进我们任何主表；SurroundOcc 数据不下载；
+  2. **采纳**选项 2+3 合并：写了 `scripts/gf2_load_smoke.py`（数据无关的构建+严格载权重验证）和 `scripts/gf2_extract_gaussians.py`（mini 上 image→Gaussians 提取，绕过 GT，pkl 自动过滤到 mini 场景）——后者同时就是特征缓存生成器；
+  3. **IO 对策**（回应选项4）：不专门"解决"NAS，架构上绕过——图像只在提取时读一遍（顺序、一次性），缓存的 Gaussian npz（fp16，估 <1MB/帧，待 R3 实测）放本地盘，下游 belief memory 训练全部读本地缓存。trainval 全量提取一次 ≈ 34k 帧 × 编码耗时（R3 实测后估算）。
+- **下一轮**：ROUND_03 = init.pth + pkl 下载 → 加载冒烟 → mini 提取（40 帧试跑 + 全量 404 帧）→ 补 dd 顺序读写。

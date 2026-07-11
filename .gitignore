@@ -7,3 +7,4 @@ data/
 *.pth
 *.ckpt
 .DS_Store
+third_party/
