@@ -5,26 +5,38 @@
 
 ## 1. 数据集下载（最先启动，后台进行，磁盘需求 ≈ 600 GB）
 
-### 1a. nuScenes（官网需注册账号：https://www.nuscenes.org/nuscenes#download）
+> 国内直连 nuScenes 官网（AWS 美区）很慢。按下面的优先顺序走国内渠道。
 
-下载优先级：
-1. **`v1.0-mini`（4 GB）——今天就要**，前几周的开发调试全靠它；
-2. **metadata + `v1.0-trainval` 10 个分卷（~550 GB）——后台慢慢下**，W5（约 8 月中）前到位即可；
-3. CAN bus expansion（小，顺手下）。
+### 1a. nuScenes —— 首选 OpenDataLab（上海AI实验室，国内 CDN）
+
+下载优先级：先 **`v1.0-mini`（4 GB，今天就要）**，`v1.0-trainval` 全量（~550 GB）后台慢慢下，W5（约 8 月中）前到位即可；CAN bus expansion 小，顺手下。
+
+1. 注册 https://opendatalab.com （手机号即可），数据集页：
+   https://opendatalab.com/OpenDataLab/nuScenes/download
+2. 用官方 CLI 下载（断点续传，国内一般几十 MB/s）：
 
 ```bash
-mkdir -p ~/data/nuscenes && cd ~/data/nuscenes
-# 从官网拿到带签名的下载链接后（示例）：
-# nohup wget -c "<v1.0-mini 链接>" > dl_mini.log 2>&1 &
-# nohup wget -c "<v1.0-trainval_blobs 各分卷链接>" > dl_trainval.log 2>&1 &
-# 全部解压后目录结构应为：
-#   ~/data/nuscenes/{samples,sweeps,maps,v1.0-trainval,v1.0-mini}
+pip install openxlab
+openxlab login          # 填 opendatalab 网页个人中心生成的 Access Key
+mkdir -p ~/data && cd ~/data
+# 文件名以网页文件列表为准；先下 mini + metadata，trainval 逐卷 nohup 挂后台
+nohup openxlab dataset download --dataset-repo OpenDataLab/nuScenes \
+    --source-path <网页上的 mini 包路径> --target-path ./nuscenes_dl > dl_mini.log 2>&1 &
 ```
 
-### 1b. Occ3D-nuScenes（~50 GB，遮挡实验的关键标签）
+**备选**（OpenDataLab 不行时）：nuScenes 官网 https://www.nuscenes.org/nuscenes#download 注册后，下载 region 选 **Asia**（新加坡节点，比默认美区快很多），拿签名链接 `nohup wget -c "<链接>" &`；或用社区脚本 https://github.com/li-xl/nuscenes-download 账号密码自动逐卷下载（设 `region='asia'`）。
 
-- 入口：https://github.com/Tsinghua-MARS-Lab/Occ3D（其 HuggingFace 链接走 hf-mirror，见 §2 的 HF_ENDPOINT）
-- 解压到 `~/data/occ3d/`，**确认包含 `mask_camera`（相机可见性 mask）**——这是我们遮挡子集的监督信号，缺了整个招牌实验做不了。
+解压后目录结构应为：`~/data/nuscenes/{samples,sweeps,maps,v1.0-trainval,v1.0-mini}`
+
+### 1b. Occ3D-nuScenes 占据标签 —— 只需 gts 包（几个 GB，不是 50 GB 全量）
+
+我们只用它的 `gts`（含 **mask_camera** 相机可见性 mask——遮挡实验的监督信号，缺了招牌实验做不了）；图像用 1a 的 nuScenes 原图，**不要下 Occ3D 的 imgs**。
+
+- 入口：https://github.com/CVPR2023-3D-Occupancy-Prediction/CVPR2023-3D-Occupancy-Prediction
+  （OccWorld / GaussianFormer 系用的就是这份 `gts.tar.gz`，README 提供多个下载源）
+- Google Drive 国内不可达时：优先其 OpenDataLab / 百度网盘源；HuggingFace 副本走 hf-mirror（先做 §2 的 `HF_ENDPOINT` 配置）后用
+  `huggingface-cli download <repo_id> --repo-type dataset --local-dir ~/data/occ3d`
+- 解压到 `~/data/occ3d/gts/`，验证每帧 `labels.npz` 内含 `semantics / mask_lidar / mask_camera` 三个数组。
 
 下载启动后即可进行第 2 步，不用等。
 
