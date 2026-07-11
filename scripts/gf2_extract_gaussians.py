@@ -31,27 +31,43 @@ from pathlib import Path
 
 def filter_pkls_to_version(pkl_paths, nusc_root, version, tmp_pkl):
     """Merge info pkls and keep only scenes present in the given nuScenes
-    version (e.g. v1.0-mini). Returns path to the filtered pkl."""
+    version (e.g. v1.0-mini).
+
+    The pkls key scenes by scene *token* (32-char hash), while scene.json
+    carries both token and human-readable name — match on either.
+    Returns (filtered pkl path, kept keys, token->name map).
+    """
     import json as _json
 
     import mmengine
 
     scene_file = Path(nusc_root) / version / "scene.json"
     assert scene_file.exists(), f"not found: {scene_file}"
-    keep = {s["name"] for s in _json.loads(scene_file.read_text())}
+    scene_meta = _json.loads(scene_file.read_text())
+    names = {s["name"] for s in scene_meta}
+    tokens = {s["token"] for s in scene_meta}
+    tok2name = {s["token"]: s["name"] for s in scene_meta}
+    keep = names | tokens
 
-    infos, metadata = {}, []
+    infos, metadata, key_samples = {}, [], []
     for p in pkl_paths:
         data = mmengine.load(p)
+        key_samples += list(data["infos"].keys())[:3]
         for scene, frames in data["infos"].items():
             if scene in keep and scene not in infos:
                 infos[scene] = frames
         for scene, idx in data["metadata"]:
             if scene in keep:
                 metadata.append((scene, idx))
-    assert infos, f"no overlap between pkls and {version} scenes"
+    if not infos:
+        raise SystemExit(
+            f"no overlap between pkls and {version} scenes.\n"
+            f"  pkl scene keys look like : {key_samples}\n"
+            f"  {version} names e.g.     : {sorted(names)[:3]}\n"
+            f"  {version} tokens e.g.    : {sorted(tokens)[:3]}\n"
+            "Send this output back for diagnosis.")
     mmengine.dump({"infos": infos, "metadata": metadata}, tmp_pkl)
-    return tmp_pkl, sorted(keep & set(infos.keys()))
+    return tmp_pkl, sorted(infos.keys()), tok2name
 
 
 def main():
@@ -100,13 +116,15 @@ def main():
     if args.mini_version != "none":
         tmp_pkl = str(out_dir / "_filtered_infos.pkl")
         data_root = ds_cfg.get("data_root", "data/nuscenes/")
-        pkl_path, scenes = filter_pkls_to_version(
+        pkl_path, scenes, tok2name = filter_pkls_to_version(
             pkl_paths, data_root, args.mini_version, tmp_pkl)
-        print(f"scenes kept ({len(scenes)}): {scenes}")
+        print(f"scenes kept ({len(scenes)}): "
+              f"{[tok2name.get(s, s) for s in scenes]}")
         ds_cfg["imageset"] = pkl_path
     else:
         assert len(pkl_paths) == 1, "use one pkl when mini-version=none"
         ds_cfg["imageset"] = pkl_paths[0]
+        tok2name = {}
 
     dataset = OPENOCC_DATASET.build(ds_cfg)
     print(f"frames: {len(dataset)}")
@@ -141,9 +159,17 @@ def main():
             g = rep[-1]["gaussian"]  # last-layer GaussianPrediction
             scene, idx = keyframes[i]
             info = dataset.scene_infos[scene][idx]
-            token = info.get("token", info.get("sample_token", f"{idx:04d}")) \
-                if isinstance(info, dict) else f"{idx:04d}"
-            scene_dir = out_dir / scene
+            token = info.get("token", f"{idx:04d}") if isinstance(info, dict) else f"{idx:04d}"
+
+            # ego pose + timestamp: required downstream for temporal
+            # alignment of the belief memory (static-Gaussian ego warp)
+            from pyquaternion import Quaternion
+            pose = info["data"]["LIDAR_TOP"]["pose"]
+            ego2global = np.eye(4)
+            ego2global[:3, :3] = Quaternion(pose["rotation"]).rotation_matrix
+            ego2global[:3, 3] = np.asarray(pose["translation"])
+
+            scene_dir = out_dir / tok2name.get(scene, scene)
             scene_dir.mkdir(exist_ok=True)
             np.savez_compressed(
                 scene_dir / f"{idx:04d}_{token}.npz",
@@ -152,6 +178,9 @@ def main():
                 rotations=g.rotations[0].cpu().numpy().astype(np.float16),
                 opacities=g.opacities[0].cpu().numpy().astype(np.float16),
                 semantics=g.semantics[0].cpu().numpy().astype(np.float16),
+                ego2global=ego2global.astype(np.float64),
+                timestamp=np.float64(info["timestamp"] / 1e6),
+                sample_token=np.array(token),
             )
             n_saved += 1
             if i % 20 == 0:

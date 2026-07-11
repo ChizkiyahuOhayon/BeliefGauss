@@ -97,3 +97,16 @@
   2. **采纳**选项 2+3 合并：写了 `scripts/gf2_load_smoke.py`（数据无关的构建+严格载权重验证）和 `scripts/gf2_extract_gaussians.py`（mini 上 image→Gaussians 提取，绕过 GT，pkl 自动过滤到 mini 场景）——后者同时就是特征缓存生成器；
   3. **IO 对策**（回应选项4）：不专门"解决"NAS，架构上绕过——图像只在提取时读一遍（顺序、一次性），缓存的 Gaussian npz（fp16，估 <1MB/帧，待 R3 实测）放本地盘，下游 belief memory 训练全部读本地缓存。trainval 全量提取一次 ≈ 34k 帧 × 编码耗时（R3 实测后估算）。
 - **下一轮**：ROUND_03 = init.pth + pkl 下载 → 加载冒烟 → mini 提取（40 帧试跑 + 全量 404 帧）→ 补 dd 顺序读写。
+
+---
+
+## Round 3（进行中）— 加载验证通过；提取脚本首跑暴露两个我方 bug（已修）
+
+- **日期**：2026-07-12　**执行**：朋友（步骤 1–2）+ 本地修复
+- **通过**：`gf2_load_smoke.py` 输出 "OK: checkpoint matches architecture exactly."（strict_load_ok=true）——权重、架构、环境三者互相咬合确认。init.pth / 两个 pkl 均已就位。
+- **失败**：`gf2_extract_gaussians.py --limit 40` 报 `no overlap between pkls and v1.0-mini scenes`。
+- **根因（读源码定位，非数据问题）**：官方 pkl 的场景键是 **scene token**（32 位哈希），我的过滤函数拿 scene **name**（"scene-0061"）匹配 → 零交集。pkl 本身没下错（清华云盘的就是全量 trainval 版，无 mini 专用版，本就该由脚本过滤）。
+- **修复**（commit 见 tag `round-3` 更新）：
+  1. 过滤同时匹配 name 和 token（读 `v1.0-mini/scene.json` 的两个字段），输出目录用可读的 scene name；失配时打印 pkl 键样例与 name/token 样例便于远程诊断；
+  2. **补漏（重要）**：提取的 npz 原本没存 `ego2global` 位姿和 `timestamp`——belief memory 的静态 Gaussian 自车对齐（GaussianWorld 式 predict 步）必需。现每帧随存 ego2global(4×4)、timestamp、sample_token（token 同时是与 Occ3D gts 目录对齐的主键）。
+- **教训入账**：远程执行前，凡涉及外部数据格式假设（键型、路径、单位），必须先向执行端要 3 行样例数据核对——本次损失一个往返。
