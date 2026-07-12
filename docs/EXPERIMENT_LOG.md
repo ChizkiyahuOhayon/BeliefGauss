@@ -100,7 +100,20 @@
 
 ---
 
-## Round 3（进行中）— 加载验证通过；提取脚本首跑暴露两个我方 bug（已修）
+## Round 3（完成）— GaussianFormer-2 提取链路全线跑通，mini 404 帧落盘
+
+**最终结果（2026-07-11 服务器回传 report.json）**：
+| 指标 | 数值 | 推论 |
+|---|---|---|
+| frames_saved | 404（mini 全量） | 10 场景全覆盖 |
+| 纯前向耗时 | **1439 ms/帧**（0.69 fps, fp32, batch 1, A40 单卡） | trainval 34k 帧：单卡 ~13.7h，**4 卡分片 ~3.5h** |
+| GPU 显存峰值 | **2.6 GB** | 分片并行无压力；将来 batch>1 还有余量 |
+| 单帧 npz | **0.31 MB**（fp16, 无 128 维实例特征） | trainval 全量缓存 **≈11 GB**，本地盘轻松容纳，NAS IO 风险就此关闭 |
+| mini 缓存总量 | 127 MB | **可直接打包发回本地**——真实数据的本地 CPU 开发就此解锁（ROUND_04 第 1 项） |
+
+**待定决策入账**：npz 目前只存了 (μ, scale, rot, opacity, semantics)，未存 128 维实例特征 `rep_features`。若 belief memory 的槽特征需要它，trainval 缓存将从 11GB 涨到 ~67GB（本地盘仍可容纳但紧张）。先用 18 维 semantics 作槽特征起步，消融后再决定是否二次提取。
+
+### 过程记录（三个卡点，均已修复）
 
 - **日期**：2026-07-12　**执行**：朋友（步骤 1–2）+ 本地修复
 - **通过**：`gf2_load_smoke.py` 输出 "OK: checkpoint matches architecture exactly."（strict_load_ok=true）——权重、架构、环境三者互相咬合确认。init.pth / 两个 pkl 均已就位。

@@ -83,6 +83,9 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--limit", type=int, default=0, help="max frames (0 = all)")
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--shard", type=int, default=0,
+                    help="shard index for multi-GPU extraction")
+    ap.add_argument("--num-shards", type=int, default=1)
     args = ap.parse_args()
 
     out_dir = Path(os.path.expandvars(args.out)).resolve()
@@ -142,6 +145,9 @@ def main():
         tok2name = {}
 
     dataset = OPENOCC_DATASET.build(ds_cfg)
+    if args.num_shards > 1:
+        dataset.keyframes = dataset.keyframes[args.shard::args.num_shards]
+        print(f"shard {args.shard}/{args.num_shards}")
     print(f"frames: {len(dataset)}")
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=4,
                         collate_fn=custom_collate_fn_temporal, pin_memory=True)
@@ -227,7 +233,9 @@ def main():
         "total_cache_size_mb": float(sum(f.stat().st_size for f in files) / 1e6),
         "torch": torch.__version__,
     }
-    (out_dir / "report.json").write_text(json.dumps(report, indent=2))
+    report_name = "report.json" if args.num_shards == 1 \
+        else f"report_shard{args.shard}.json"
+    (out_dir / report_name).write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))
 
 
