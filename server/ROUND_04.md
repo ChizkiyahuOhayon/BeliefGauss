@@ -1,7 +1,8 @@
-# 第 4 轮：mini 数据包发回（解锁本地开发）+ trainval 全量提取
+# 第 4 轮：mini 数据包发回 + OccWorld 基线开训（GPU 饱和开始）+ trainval 提取
 
 > tag：`round-4`　`cd ~/BeliefGauss && git fetch --tags && git checkout round-4`
-> 本轮重点是【1. 打包发回】——它解锁我们这边的本地开发，请最优先做。
+> 顺序：【1. 打包发回】（10 分钟，解锁我们本地开发）→【1.6 OccWorld 开训】（今天就能开，
+> 不需要等图像下载！让 GPU 从现在起一直有活干）→【2. trainval 提取】（图像到位后）。
 
 ## 1. 打包三样东西发回（共约 300–500MB，网盘即可）
 
@@ -28,6 +29,50 @@ cp -r $BG_DATA/nuscenes/v1.0-mini bundle_r4/v1.0-mini
 
 zip -r bundle_r4.zip bundle_r4   # 发回这个 zip
 ```
+
+## 1.6 OccWorld 基线复现——今天就开训（不需要图像！）
+
+OccWorld（CVPR'24 占据世界模型）是我们表 1 的主要对比基线 + Plan C 的被试。
+它的训练**只读 Occ3D gts**（已在 NAS）+ 2 个 pkl + nuScenes 的 metadata，不读相机图像。
+
+```bash
+# (a) 代码 + pkl（清华云盘，国内直连）
+cd ~/BeliefGauss/third_party
+git clone https://github.com/wzzheng/OccWorld.git
+cd OccWorld && mkdir -p data out
+# 从 https://cloud.tsinghua.edu.cn/d/9e231ed16e4a4caca3bd/ 下载两个 pkl 放到 data/：
+#   nuscenes_infos_train_temporal_v3_scene.pkl / nuscenes_infos_val_temporal_v3_scene.pkl
+# 官方预训练模型（先用来验证评测链路）：https://cloud.tsinghua.edu.cn/d/ff4612b2453841fba7a5/ 放到 out/
+
+# (b) 数据布局：它要 data/nuscenes/gts/<scene>/<token>/labels.npz
+#     注意：CIFS 网盘上不能建软链，且训练高频随机读 labels.npz——
+#     把 gts 拷到本地盘（先看大小，<40G 就拷），软链全部建在本地：
+du -sh $BG_DATA/occ3d/gts        # 把这个数字也发回
+cp -r $BG_DATA/occ3d/gts ~/data_local/occ3d_gts
+mkdir -p data/nuscenes
+for d in maps samples sweeps v1.0-trainval lidarseg; do
+  ln -s $BG_DATA/nuscenes/$d data/nuscenes/$d 2>/dev/null
+done
+ln -s ~/data_local/occ3d_gts data/nuscenes/gts
+
+# (c) 环境：先直接用 gf2 env 试（同为 py3.8/cu118/mmdet3d 栈）；缺包就 pip 装并记录
+conda activate gf2
+pip install einops timm  # 若已装会跳过
+
+# (d) 先验证评测链路（用官方权重，~30 分钟）：
+CUDA_VISIBLE_DEVICES=1 python eval_metric_stp3.py --py-config config/occworld.py --work-dir out/occworld_eval \
+  2>&1 | tee occworld_eval.log
+# 成功标准：输出 forecasting mIoU/IoU 表，与论文表 1 数量级一致
+
+# (e) 从头训练（两阶段，各占 1 张卡，共 2-4 天——这就是 GPU 饱和的主力）：
+CUDA_VISIBLE_DEVICES=2 nohup python train.py --py-config config/train_vqvae.py \
+  --work-dir out/vqvae > train_vqvae.log 2>&1 &
+# VQVAE 训完后（看 log 收敛），改 config/train_occworld.py 里的 VQVAE ckpt 路径，再：
+# CUDA_VISIBLE_DEVICES=2 nohup python train.py --py-config config/train_occworld.py \
+#   --work-dir out/occworld > train_occworld.log 2>&1 &
+```
+
+任何一步报错：发完整 log，继续做其他步骤，不要卡在这里。
 
 ## 2. trainval 下载完成后：全量提取（4 卡分片，约 3.5 小时）
 
